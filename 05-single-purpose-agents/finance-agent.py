@@ -19,6 +19,10 @@ from pydantic import BaseModel, Field
 from typing import Literal 
 from langchain.agents.structured_output import ToolStrategy
 
+from langgraph.checkpoint.memory import InMemorySaver
+
+from langchain_core.messages import AIMessage
+
 """
 Define Models
 """
@@ -388,6 +392,11 @@ Guidelines:
 - Tailor advice based on the user's membership tier"""
 
 """
+Initialize Checkpointer
+"""
+checkpointer = InMemorySaver()
+
+"""
 Agent Creation
 """
 agent = create_agent(
@@ -403,6 +412,27 @@ agent = create_agent(
     #system_prompt=SYSTEM_PROMPT, # MODIFIED FOR STAGE 3
     context_schema=UserContext, # ===== STAGE 2: NEW PARAMETER =====
     response_format= ToolStrategy(FinancialResponse), 
+    checkpointer=checkpointer,
+    middleware=[  # ===== STAGE 3: NEW PARAMETER =====
+        dynamic_model_selector,
+        tier_based_prompt,
+        handle_tool_errors, # ===== STAGE 4: NEW MIDDLEWARE =====
+    ], 
+)
+
+agent_for_streaming = create_agent(
+    # model="gpt-4o",
+    model= basic_model, # MODIFIED FOR STAGE 3
+    tools=[
+        get_account_balance, 
+        get_recent_transactions, 
+        calculate_budget,
+        get_personalized_greeting, # ===== STAGE 2: NEW TOOL ADDED =====
+        transfer_money, # ===== STAGE 4: NEW TOOL =====
+    ],
+    #system_prompt=SYSTEM_PROMPT, # MODIFIED FOR STAGE 3
+    context_schema=UserContext, # ===== STAGE 2: NEW PARAMETER =====
+    checkpointer=checkpointer,
     middleware=[  # ===== STAGE 3: NEW PARAMETER =====
         dynamic_model_selector,
         tier_based_prompt,
@@ -502,7 +532,7 @@ def main():
     )
     print(f"🤖 Agent: {response['messages'][-1].content}") """
 
-    # Test 8: Structured Response
+    """ # Test 8: Structured Response
     query = "What's my financial situation? Check all my accounts and give me advice."
     
     print("\n👤 Alice (Platinum) - Financial Condition")
@@ -524,7 +554,59 @@ def main():
     print(f"\n⚠️ Warnings:")
     for warning in structured.warnings:
         print(f"   • {warning}")
-    print(f"\n🎯 Confidence: {structured.confidence}")
+    print(f"\n🎯 Confidence: {structured.confidence}") """
+
+    """ # =================================================
+    # TESTING MEMORY
+    # =================================================
+
+    # Create a fresh thread for memory testing
+    memory_config = {"configurable": {"thread_id": "alice-memory-test"}}
+
+    # Turn 1
+    print("\n💬 Turn 1: 'What are my account balances?'")
+    print("-" * 40)
+    response = agent.invoke(
+        {"messages": [{"role": "user", "content": "What are my account balances?"}]},
+        context=alice_context,
+        config=memory_config,
+    )
+    print(f"📌 Summary: {response['structured_response'].details}")
+    
+    # Turn 2 - References Turn 1
+    print("\n💬 Turn 2: 'Which account has the most money?'")
+    print("-" * 40)
+    response = agent.invoke(
+        {"messages": [{"role": "user", "content": "Which account has the most money?"}]},
+        context=alice_context,
+        config=memory_config,  # Same thread_id!
+    )
+    print(f"📌 Summary: {response['structured_response'].details}")
+    
+    # Turn 3 - References previous turns
+    print("\n💬 Turn 3: 'Based on what we discussed, should I move money to savings?'")
+    print("-" * 40)
+    response = agent.invoke(
+        {"messages": [{"role": "user", "content": "Based on what we discussed, should I move money to savings?"}]},
+        context=alice_context,
+        config=memory_config,  # Same thread_id!
+    )
+    print(f"📌 Summary: {response['structured_response'].summary}")
+    print(f"✅ Actions: {response['structured_response'].action_items}") """
+
+    bob_config = {"configurable": {"thread_id": "bob-001"}}
+
+    query = "What's my financial situation? Check all my accounts and give me advice."
+
+    for chunk in agent_for_streaming.stream(  
+        {"messages": [{"role": "user", "content": query}]},
+        context=bob_context,
+        config=bob_config,
+        stream_mode="updates",
+    ):
+        for step, data in chunk.items():
+            print(f"step: {step}")
+            print(f"content: {data['messages'][-1].content_blocks}")
 
 
 if __name__ == "__main__":
